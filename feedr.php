@@ -5,18 +5,18 @@
  *
  * Leverages SimpleXML for RSS XML processing 
  *
- * Copyright (c) 2011, Geoff Doty, and contributors
+ * Copyright (c) 2012, Geoff Doty
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are
  * permitted provided that the following conditions are met:
  *
- * 	* Redistributions of source code must retain the above copyright notice, this list of
- * 	  conditions and the following disclaimer.
+ *  * Redistributions of source code must retain the above copyright notice, this list of
+ *    conditions and the following disclaimer.
  *
- * 	* Redistributions in binary form must reproduce the above copyright notice, this list
- * 	  of conditions and the following disclaimer in the documentation and/or other materials
- * 	  provided with the distribution.
+ *  * Redistributions in binary form must reproduce the above copyright notice, this list
+ *    of conditions and the following disclaimer in the documentation and/or other materials
+ *    provided with the distribution.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
  * OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
@@ -29,122 +29,148 @@
  * POSSIBILITY OF SUCH DAMAGE.
  *
  * @author Geoff Doty <n2geoff@gmail.com>
- * @copyright 2011 Geoff Doty. 
+ * @copyright 2012 Geoff Doty. 
  * @license http://www.opensource.org/licenses/bsd-license.php BSD License
- * @version .45
+ * @version 0.5.1
  * @todo write documentation
  */
 class Feedr {
-	
-	private $feed_url 	   	= NULL;
-	private $feed 		   	= NULL;
-	private $feed_version 	= NULL;
+    
+    private $request        = NULL;        //request url
+    private $feed           = NULL;        //rss feed object
+    private $response       = NULL;        //raw response
 
-	private $raw 		   	= NULL;
+    private $cache          = FALSE;       //unused
+    private $cache_dir      = __DIR__;     //unused
 
-	private $cache 		   	= FALSE;
-	private $cache_dir 		= __DIR__;
+    private $errors         = array();     //error collection
 
-	private $errors 		= array();
-
-	public function __construct($feed)
-	{
-		if(!filter_var($feed, FILTER_VALIDATE_URL))
-		{
-			if(!file_exists($feed))
-			{
+    public function __construct($request)
+    {
+        if(!filter_var($request, FILTER_VALIDATE_URL))
+        {
+            if(!file_exists($request))
+            {
                 trigger_error('Invalid Location Identifier:  Must be FILE or URL', E_USER_WARNING);
                 return $this;
-			}
-		}
+            }
+        }
 
-		$this->feed_url = $feed;
-		if($this->init())
-		{
-			return $this;
-		}
-
-		return FALSE;
-	}
-
-	private function init()
-	{
-		//suppress xml errors
-		libxml_use_internal_errors(TRUE);
-
-		//grab our feed
-		$fp = fopen($this->feed_url, 'r');
-
-		if(!$fp)
-		{
-            trigger_error('Error reading feed stream', E_USER_WARNING);
-			$this->errors[] = "Error reading feed stream";
+        //set feed url
+        $this->request = $request;
+        
+        //initilize feed
+        if($this->init())
+        {
             return $this;
-		}
-		else
-		{
-			while(!feof($fp))
-			{
-				$this->raw .= fread($fp, 8192);
-			}
-            
-            fclose($fp);
-		}
+        }
+    }
 
-		//convert feed to simplexml object
-		$this->feed = simplexml_load_string(utf8_encode($this->raw));
+    /**
+     * Initilizes the Feed
+     *
+     * Fetches and validates xml content
+     *
+     * @return bool
+     */
+    private function init()
+    {
+        if(function_exists('curl_init'))
+        {
+            $ch = curl_init($this->request);
 
-		//valid xml?
-		if(!$this->feed)
-		{
-			$errors = lib_get_errors();
+            //define cURL options
+            $options = array
+            (
+                CURLOPT_HEADER => 0,          //do not return headers
+                CURLOPT_FOLLOWLOCATION => 1,  //redirect as needed
+                CURLOPT_RETURNTRANSFER => 1   //return content
+            );
 
-			foreach($errors as $error)
-			{
-				$this->errors[] = $error;
-			}
-		}
+            //apply curl options
+            curl_setopt_array($ch, $options);
 
-		//initilized succesfully? 
-		if(count($this->errors > 0))
-		{
-			return FALSE;
-		}
-		else
-		{
-			return TRUE;
-		}
-	}
+            //execute curl request
+            $this->response = curl_exec($ch);
 
-	public function feed_url()
-	{
-		return $this->feed_url;
-	}
+            //close curl connection
+            curl_close($ch);
+        }
+        elseif(ini_get('allow_url_fopen'))  
+        {
+            $fp = fopen($this->request, 'r');
 
-	public function feed_version()
-	{
-		return $this->feed->attributes()->version;
-	}
+            if($fp)
+            {
+                while(!feof($fp))
+                {
+                    $this->response .= fread($fp, 8192);
+                }
+                
+                fclose($fp);
+            }
+        }
+        else
+        {
+            trigger_error('Error reading feed stream', E_USER_WARNING);
+            $this->errors[] = "Error reading feed stream";
+            return $this;
+        }
 
-	public function info()
-	{
-		$info = new Feedr_XML();
+        //suppress xml errors
+        libxml_use_internal_errors(TRUE);
 
-		$info->source   = $this->normalize($this->feed_url);
-		$info->version  = $this->_normalize($this->feed->attributes()->version);
-		$info->size     = strlen($this->raw);
+        //convert feed to simplexml object
+        if($this->feed = simplexml_load_string(utf8_encode($this->response)))
+        {
+            return TRUE;
+        }
+        else 
+        {
+            //any errors generated
+            if(!$this->feed)
+            {
+                $errors = libxml_get_errors();
 
-		return $info;
-	}
+                foreach($errors as $error)
+                {
+                    $this->errors[] = $error;
+                }
+            }
 
-	public function channel()
-	{
-		return $this->feed->channel;
-	}
+            return FALSE;
+        }
+    }
 
-	public function items($strip = FALSE)
-	{
-		//return $this->feed->channel->item;
+    public function feed_url()
+    {
+        return $this->request;
+    }
+
+    public function feed_version()
+    {
+        return $this->feed->attributes()->version;
+    }
+
+    public function info()
+    {
+        $info = new Feedr_XML();
+
+        $info->source   = $this->normalize($this->request);
+        $info->version  = $this->_normalize($this->feed->attributes()->version);
+        $info->size     = strlen($this->response);
+
+        return $info;
+    }
+
+    public function channel()
+    {
+        return $this->feed->channel;
+    }
+
+    public function items($strip = FALSE)
+    {
+        //return $this->feed->channel->item;
         $items = array();
         
         if($this->_is_okay()) 
@@ -154,18 +180,18 @@ class Feedr {
                 $itm = new Feedr_XML();
                 
                 //clean standard RSS elements
-                $itm->title 	= $this->_normalize($item->title);
-                $itm->link 		= $this->_normalize($item->link);
-                $itm->comments 	= $this->_normalize($item->comments);
-                $itm->pubDate 	= $this->_normalize($item->pubDate);
-                $itm->author 	= $this->_normalize($item->author);
-                $itm->guid 		= $this->_normalize($item->guid);
-                $itm->source 	= $this->_normalize($item->source);
+                $itm->title     = $this->_normalize($item->title);
+                $itm->link      = $this->_normalize($item->link);
+                $itm->comments  = $this->_normalize($item->comments);
+                $itm->pubDate   = $this->_normalize($item->pubDate);
+                $itm->author    = $this->_normalize($item->author);
+                $itm->guid      = $this->_normalize($item->guid);
+                $itm->source    = $this->_normalize($item->source);
                 $itm->description = $this->_normalize($item->description);
-                $itm->category 	= $this->_normalize($item->category);
+                $itm->category  = $this->_normalize($item->category);
                 
                 //get encoded content
-                $content 	  = $item->xpath('content:encoded');
+                $content      = $item->xpath('content:encoded');
                 $itm->content = $this->_normalize($content[0]);
                 
                 //setup enclosure object
@@ -194,8 +220,11 @@ class Feedr {
             }
         }   
         return $items;
-	}
+    }
     
+    /**
+     * @todo future strict validation
+     */
     private function _standard_rss_items()
     {
         return array
@@ -213,11 +242,25 @@ class Feedr {
         );
     }
     
+    /**
+     * Cleans Feed Values
+     *
+     * Essentially this allows one place to 
+     * tweak returned values
+     *
+     * @param string $value
+     * @return string
+     */
     private function _normalize($value)
     {
         return filter_var($value, FILTER_SANITIZE_STRING, FILTER_FLAG_STRIP_HIGH);
     }
     
+    /**
+     * Checks error array
+     *
+     * @return bool
+     */
     private function _is_okay()
     {
         if(count($this->errors) <= 0)
@@ -239,14 +282,14 @@ class Feedr_XML {
     }
     
     public function __get($method)
-	{
-		return FALSE;
-	}
+    {
+        return FALSE;
+    }
     
     public function __call($method, $arguments)
-	{
-		return FALSE;
-	}
+    {
+        return FALSE;
+    }
     
     public function __toString()
     {
