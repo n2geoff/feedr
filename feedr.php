@@ -31,47 +31,69 @@
  * @author Geoff Doty <n2geoff@gmail.com>
  * @copyright 2012 Geoff Doty. 
  * @license http://www.opensource.org/licenses/bsd-license.php BSD License
- * @version 0.5.1
+ * @version 0.6.0
  * @todo write documentation
  */
+
+class FeedrException extends Exception {}
+
 class Feedr {
     
-    private $request        = NULL;        //request url
-    private $feed           = NULL;        //rss feed object
-    private $response       = NULL;        //raw response
+    private $request        = NULL;         //request url
+    private $feed           = NULL;         //rss feed object
+    public  $response       = NULL;         //raw response
 
-    private $cache          = FALSE;       //unused
-    private $cache_dir      = __DIR__;     //unused
+    private $cache          = FALSE;        //unused
+    private $cache_dir      = NULL;         //temp directory
+    private $expiration     = NULL;         //cache expiration in seconds
 
-    private $errors         = array();     //error collection
-
-    public function __construct($request)
+    public function __construct($request, $expires = NULL)
     {
         if(!filter_var($request, FILTER_VALIDATE_URL))
         {
             if(!file_exists($request))
             {
-                trigger_error('Invalid Location Identifier:  Must be FILE or URL', E_USER_WARNING);
+                throw new FeedrException('Request must be valid FILE or URL');
                 return $this;
             }
         }
 
         //set feed url
         $this->request = $request;
-        
-        //initilize feed
-        if($this->init())
+
+        //setup caching if requested
+        if($expires > 0)
         {
-            return $this;
+            //setup caching
+            $this->cache_dir = sys_get_temp_dir(); 
+            $this->expiration = $expires; 
+
+            //check cache
+            $cached = $this->cache($this->request);
+            
+            //use cache if exists
+            if($cached)
+            {
+                $this->response = $cached;
+                return $this;
+            }
+            else
+            {
+                $this->init();
+                $this->cache($this->request, $this->response);
+                return $this;
+            }
         }
+
+        return $this->init();
     }
 
     /**
-     * Initilizes the Feed
+     * Initilizes new connection
      *
      * Fetches and validates xml content
      *
-     * @return bool
+     * @return object
      */
     private function init()
     {
@@ -112,8 +134,7 @@ class Feedr {
         }
         else
         {
-            trigger_error('Error reading feed stream', E_USER_WARNING);
-            $this->errors[] = "Error reading feed stream";
+            throw new FeedrException('No communications methods available.');
             return $this;
         }
 
@@ -123,23 +144,14 @@ class Feedr {
         //convert feed to simplexml object
         if($this->feed = simplexml_load_string(utf8_encode($this->response)))
         {
-            return TRUE;
+            return $this;
         }
         else 
         {
-            //any errors generated
-            if(!$this->feed)
-            {
-                $errors = libxml_get_errors();
-
-                foreach($errors as $error)
-                {
-                    $this->errors[] = $error;
-                }
-            }
-
-            return FALSE;
+            throw new FeedrException('Failed to initilize feed. Check feed format.');
         }
+
+        return $this;
     }
 
     public function feed_url()
@@ -170,10 +182,9 @@ class Feedr {
 
     public function items($strip = FALSE)
     {
-        //return $this->feed->channel->item;
         $items = array();
         
-        if($this->_is_okay()) 
+        if(is_array($this->feed->channel->item))
         {
             foreach($this->feed->channel->item as $item)
             {
@@ -218,12 +229,60 @@ class Feedr {
                 
                 $items[] = $itm;
             }
-        }   
+        }
         return $items;
+    }
+
+    /**
+     * XML Cache
+     */
+    private function cache($key, $data = NULL)
+    {
+        $tmpfile = $this->cache_dir . '/' . substr(sha1($this->request), 0, 8) . '.feedr';
+
+        //get or set cache?
+        if($data === NULL)
+        {
+            //retrieve
+            if(file_exists($tmpfile)) 
+            {
+                if(time() > (filemtime($tmpfile) + $this->expiration))
+                {
+                    //delete expired cache
+                    unlink($tmpfile);
+
+                    return FALSE;
+                }
+                else
+                {
+                    //return data in cache file
+                    if($fh = fopen($tmpfile, 'r'))
+                    {
+                        $data = fread($fh, filesize($tmpfile));
+                        fclose($fh);
+                        return $data;
+                    }
+
+                    exit('cannot read file');
+                }
+            }
+
+            //Could not find file
+            return FALSE;
+        }
+        else
+        {
+            //create new cache
+            $fh = fopen($tmpfile, 'w');  //create a temp file
+            fwrite($fh, $data);          //write cache date to file
+            fclose($fh);                 //close file operations
+
+            return $data;                //return newly cached data
+        }
     }
     
     /**
-     * @todo future strict validation
+     * @todo future strict validation/filter
      */
     private function _standard_rss_items()
     {
@@ -254,23 +313,6 @@ class Feedr {
     private function _normalize($value)
     {
         return filter_var($value, FILTER_SANITIZE_STRING, FILTER_FLAG_STRIP_HIGH);
-    }
-    
-    /**
-     * Checks error array
-     *
-     * @return bool
-     */
-    private function _is_okay()
-    {
-        if(count($this->errors) <= 0)
-        {
-            return TRUE;
-        }
-        else
-        {
-            return FALSE;
-        }
     }
 }
 

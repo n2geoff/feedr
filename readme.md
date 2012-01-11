@@ -5,7 +5,7 @@ Smaller, faster library RSS reader that leverages SimpleXML for RSS XML processi
 # USAGE
 
 	//include library
-	include 'feedr.php';
+	include('feedr.php');
 
 	//initialize with rss path
 	$feed = new feedr('http://penne.dev.local/bonywordpress/?feed=rss2');
